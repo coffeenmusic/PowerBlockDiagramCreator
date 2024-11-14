@@ -191,6 +191,10 @@ def col_to_float(df, col):
 
 val_cols = ['vout','current_limit','load_current','efficiency']
 
+# Create an efficiency column if it doesn't exist. It may not exist if all regs are LDOs
+if 'efficiency' not in obj_df.columns:
+    obj_df['efficiency'] = np.nan
+
 for c in val_cols:
     obj_df = col_to_float(obj_df, c)
 
