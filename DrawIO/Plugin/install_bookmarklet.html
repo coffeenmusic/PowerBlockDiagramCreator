@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Power Block Calculator - Bookmarklet Installer</title>
+<style>
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #333; line-height: 1.6; }
+  h1 { color: #1a73e8; }
+  .bookmarklet-link { display: inline-block; padding: 12px 24px; background: #1a73e8; color: #fff !important; text-decoration: none; border-radius: 6px; font-size: 16px; font-weight: bold; cursor: grab; margin: 16px 0; }
+  .bookmarklet-link:hover { background: #1557b0; }
+  .step { background: #f8f9fa; border-left: 4px solid #1a73e8; padding: 12px 16px; margin: 12px 0; border-radius: 0 4px 4px 0; }
+  .step strong { color: #1a73e8; }
+  code { background: #e8eaed; padding: 2px 6px; border-radius: 3px; font-size: 14px; }
+  .note { background: #fff3cd; border-left: 4px solid #ffc107; padding: 12px 16px; margin: 12px 0; border-radius: 0 4px 4px 0; }
+  #bookmarklet-container { margin: 16px 0; }
+</style>
+</head>
+<body>
+<h1>Power Block Calculator</h1>
+<p>This bookmarklet loads the Power Block Diagram Current Calculator plugin into <a href="https://app.diagrams.net" target="_blank">draw.io</a>.</p>
+
+<h2>Installation</h2>
+<div class="step">
+  <strong>Step 1:</strong> Make sure your browser's bookmarks/favorites bar is visible.<br>
+  <em>Chrome: Ctrl+Shift+B &nbsp;|&nbsp; Firefox: Ctrl+Shift+B &nbsp;|&nbsp; Edge: Ctrl+Shift+B</em>
+</div>
+<div class="step">
+  <strong>Step 2:</strong> Drag the blue button below to your bookmarks bar:
+</div>
+
+<div id="bookmarklet-container">
+  <noscript><p style="color:red;">JavaScript must be enabled to generate the bookmarklet link.</p></noscript>
+</div>
+
+<div class="step">
+  <strong>Step 3:</strong> Done! The bookmarklet is now saved in your bookmarks bar.
+</div>
+
+<h2>Usage</h2>
+<div class="step">
+  <strong>1.</strong> Open <a href="https://app.diagrams.net" target="_blank">app.diagrams.net</a> (draw.io)
+</div>
+<div class="step">
+  <strong>2.</strong> Open or create your power block diagram
+</div>
+<div class="step">
+  <strong>3.</strong> Click the <strong>&#x26A1; Power Block Calculator</strong> bookmark in your bookmarks bar
+</div>
+<div class="step">
+  <strong>4.</strong> You'll see an alert confirming the plugin loaded. Currents will now auto-calculate as you edit the diagram.
+</div>
+
+<div class="note">
+  <strong>Note:</strong> The bookmarklet needs to be clicked each time you open or reload draw.io. It adds a "Recalculate Currents" option under the <code>Extras</code> menu and auto-recalculates on every diagram change.
+</div>
+
+<h2>For Desktop App Users</h2>
+<p>If you use the draw.io desktop application, you can load the plugin permanently instead:</p>
+<ol>
+  <li>Launch draw.io with: <code>"C:\Program Files\draw.io\draw.io.exe" --enable-plugins</code></li>
+  <li>Go to <strong>Extras &gt; Plugins...</strong></li>
+  <li>Click <strong>Add</strong> and select <code>power_block_calculator.js</code></li>
+  <li>Click <strong>Apply</strong> and restart draw.io (with <code>--enable-plugins</code>)</li>
+</ol>
+
+<script>
+// The plugin source code - this gets properly encoded into the bookmarklet href
+var pluginCode = function() {
+Draw.loadPlugin(function(ui) {
+  var graph = ui.editor.graph;
+  var model = graph.getModel();
+  var ROOT_TYPES = ['sw_reg', 'ldo', 'acdc', 'source', 'load', 'filter', 'isum', 'pwr_sw'];
+  var isRecalculating = false;
+  var recalcTimer = null;
+
+  function removeHtml(s) { return s.replace(/<[^>]*>/g, '').trim(); }
+
+  function parseValue(s) {
+    if (typeof s !== 'string') return NaN;
+    s = removeHtml(s);
+    if (!s || s.indexOf('?') >= 0) return NaN;
+    var n = s.match(/[-+]?\d*\.?\d+/);
+    if (!n) return NaN;
+    var v = parseFloat(n[0]);
+    if (s.charAt(0) === '-') v = -v;
+    if (s.slice(-2) === 'mA') return v / 1e3;
+    if (s.slice(-2) === 'uA') return v / 1e6;
+    if (s.slice(-2) === 'mV') return v / 1e3;
+    if (s.charAt(s.length - 1) === '%') return v / 1e2;
+    if (s.indexOf('V') >= 0) {
+      var vs = s;
+      if (s.slice(-2) === 'AC') vs = s.slice(0, -2);
+      var p = vs.split('V');
+      if (p.length === 2 && p[1] !== '') {
+        v = parseFloat(p[0]) + parseFloat(p[1]) / Math.pow(10, p[1].length);
+      }
+    }
+    return v;
+  }
+
+  function fmtI(a) { return a >= 0.1 ? (Math.round(a * 100) / 100) + 'A' : Math.round(a * 1000) + 'mA'; }
+  function fmtV(v) { return v >= 0.1 ? (Math.round(v * 100) / 100) + 'V' : Math.round(v * 1000) + 'mV'; }
+
+  function getType(c) {
+    if (c && c.value && typeof c.value === 'object' && c.value.nodeType) return c.getAttribute('type') || null;
+    return null;
+  }
+
+  function getComps() {
+    var r = {}, cs = model.cells;
+    for (var id in cs) {
+      if (cs.hasOwnProperty(id)) {
+        var t = getType(cs[id]);
+        if (t !== null && ROOT_TYPES.indexOf(t) >= 0) r[id] = cs[id];
+      }
+    }
+    return r;
+  }
+
+  function getGP(c, comps) {
+    if (!c) return null;
+    if (comps[c.id]) return c;
+    var p = model.getParent(c);
+    if (!p || p.id === '0' || p.id === '1') return null;
+    if (comps[p.id]) return p;
+    return getGP(p, comps);
+  }
+
+  function readP(cc, pn) {
+    var v = cc.getAttribute(pn);
+    if (v !== null && v !== undefined && v.charAt(0) !== '%') return v;
+    var cnt = model.getChildCount(cc);
+    for (var i = 0; i < cnt; i++) {
+      var ch = model.getChildAt(cc, i);
+      if (getType(ch) === pn) { var l = ch.getAttribute('label'); if (l) return l; }
+    }
+    return null;
+  }
+
+  function writeP(cc, pn, nv) {
+    var ex = cc.getAttribute(pn);
+    if (ex !== null && ex !== undefined) {
+      if (ex === nv) return false;
+      model.execute(new mxCellAttributeChange(cc, pn, nv));
+      return true;
+    }
+    var cnt = model.getChildCount(cc);
+    for (var i = 0; i < cnt; i++) {
+      var ch = model.getChildAt(cc, i);
+      if (getType(ch) === pn) {
+        var cl = ch.getAttribute('label');
+        if (cl === nv) return false;
+        model.execute(new mxCellAttributeChange(ch, 'label', nv));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function getMult(name) {
+    if (!name) return 1;
+    var m = name.match(/x(\d+)/);
+    return m ? parseInt(m[1], 10) : 1;
+  }
+
+  function getXorGroup(name) {
+    if (!name) return null;
+    if (/\bXOR\b/i.test(name) && !/XOR\d/i.test(name)) return '_global';
+    var m = name.match(/XOR(\d+)/i);
+    return m ? m[1] : null;
+  }
+
+  function isRailXor(name) {
+    if (!name) return false;
+    var m = name.match(/XOR(\d+)([A-Z])?/i);
+    if (!m) return false;
+    return !m[2];
+  }
+
+  function recalc() {
+    if (isRecalculating) return;
+    isRecalculating = true;
+    try {
+      var comps = getComps();
+      if (Object.keys(comps).length === 0) return;
+      var sMap = {}, cs = model.cells;
+      for (var id in cs) {
+        if (!cs.hasOwnProperty(id)) continue;
+        var c = cs[id];
+        if (model.isEdge(c) && c.source && c.target) {
+          var sg = getGP(c.source, comps), tg = getGP(c.target, comps);
+          if (sg && tg && sg.id !== tg.id) sMap[tg.id] = sg.id;
+        }
+      }
+      var nodes = {};
+      for (var cid in comps) {
+        if (!comps.hasOwnProperty(cid)) continue;
+        var comp = comps[cid], type = getType(comp);
+        var vo = parseValue(readP(comp, 'vout'));
+        var eff = parseValue(readP(comp, 'efficiency'));
+        var ln = readP(comp, 'load_name');
+        var lc = NaN;
+        if (type === 'load') {
+          lc = parseValue(readP(comp, 'load_current'));
+          if (ln) { var ml = getMult(ln); if (ml > 1 && !isNaN(lc)) lc *= ml; }
+        }
+        nodes[cid] = { id: cid, type: type, vout: vo, current: lc, efficiency: isNaN(eff) ? 1.0 : eff, xorGroup: getXorGroup(ln), railXor: isRailXor(ln), normalCurrent: 0, xorCurrents: {}, children: [], sid: sMap[cid] || null };
+      }
+      for (var nid in nodes) {
+        if (!nodes.hasOwnProperty(nid)) continue;
+        var s = nodes[nid].sid;
+        if (s && nodes[s]) nodes[s].children.push(nodes[nid]);
+      }
+      for (var lid in nodes) {
+        if (!nodes.hasOwnProperty(lid)) continue;
+        var leaf = nodes[lid];
+        if (leaf.children.length === 0 && !isNaN(leaf.current)) {
+          if (leaf.railXor) { leaf.normalCurrent = 0; }
+          else if (leaf.xorGroup) { leaf.normalCurrent = 0; leaf.xorCurrents[leaf.xorGroup] = leaf.current; }
+          else { leaf.normalCurrent = leaf.current; }
+        }
+      }
+      function propV(nd) {
+        for (var i = 0; i < nd.children.length; i++) {
+          var ch = nd.children[i];
+          if (!isNaN(nd.vout)) {
+            if (['pwr_sw', 'filter', 'isum'].indexOf(ch.type) >= 0) ch.vout = nd.vout;
+            else if (ch.type === 'acdc' && isNaN(ch.vout)) ch.vout = nd.vout * Math.SQRT2 - 1;
+          }
+          propV(ch);
+        }
+      }
+      function calcI(nd) {
+        if (nd.children.length === 0) return;
+        var normalSum = 0, xorMerged = {}, railXorSum = 0, hasRailXor = false;
+        for (var i = 0; i < nd.children.length; i++) {
+          var ch = nd.children[i];
+          if (isNaN(ch.current)) calcI(ch);
+          if (isNaN(ch.current)) return;
+          var ratio = 1;
+          if (['sw_reg', 'acdc'].indexOf(ch.type) >= 0) {
+            if (isNaN(ch.vout) || isNaN(nd.vout) || nd.vout === 0 || ch.efficiency === 0) return;
+            ratio = ch.vout / (ch.efficiency * nd.vout);
+          }
+          if (ch.railXor) {
+            railXorSum += Math.abs(ch.current * ratio);
+            hasRailXor = true;
+          } else {
+            normalSum += Math.abs(ch.normalCurrent * ratio);
+            for (var g in ch.xorCurrents) {
+              if (ch.xorCurrents.hasOwnProperty(g)) {
+                var ref = Math.abs(ch.xorCurrents[g] * ratio);
+                if (!xorMerged.hasOwnProperty(g) || ref > xorMerged[g]) xorMerged[g] = ref;
+              }
+            }
+          }
+        }
+        if (hasRailXor) {
+          var otherTot = normalSum;
+          for (var g in xorMerged) { if (xorMerged.hasOwnProperty(g)) otherTot += xorMerged[g]; }
+          var total = Math.max(railXorSum, otherTot);
+          nd.normalCurrent = total; nd.xorCurrents = {}; nd.current = total;
+        } else {
+          nd.normalCurrent = normalSum; nd.xorCurrents = xorMerged;
+          var tot = normalSum, gxor = 0, hasG = xorMerged.hasOwnProperty('_global');
+          for (var g in xorMerged) {
+            if (xorMerged.hasOwnProperty(g)) {
+              if (g === '_global') { gxor = xorMerged[g]; } else { tot += xorMerged[g]; }
+            }
+          }
+          if (hasG) { tot = Math.max(gxor, tot); }
+          nd.current = tot;
+        }
+      }
+      for (var rid in nodes) {
+        if (!nodes.hasOwnProperty(rid)) continue;
+        if (!nodes[rid].sid) { propV(nodes[rid]); calcI(nodes[rid]); }
+      }
+      var changed = false;
+      model.beginUpdate();
+      try {
+        for (var wid in nodes) {
+          if (!nodes.hasOwnProperty(wid)) continue;
+          var n = nodes[wid], cc = comps[wid];
+          if (n.type !== 'load' && !isNaN(n.current)) { if (writeP(cc, 'load_current', fmtI(n.current))) changed = true; }
+          if (n.type === 'acdc' && !isNaN(n.vout)) { if (writeP(cc, 'vout', fmtV(n.vout))) changed = true; }
+        }
+      } finally { model.endUpdate(); }
+      if (changed) graph.refresh();
+    } finally { isRecalculating = false; }
+  }
+
+  function debounceRecalc() { if (isRecalculating) return; if (recalcTimer) clearTimeout(recalcTimer); recalcTimer = setTimeout(recalc, 500); }
+  model.addListener(mxEvent.CHANGE, function() { debounceRecalc(); });
+  ui.actions.addAction('recalculateCurrents', function() { recalc(); });
+  var em = ui.menus.get('extras');
+  if (em) {
+    var of = em.funct;
+    em.funct = function(menu, parent) { of.apply(this, arguments); menu.addSeparator(parent); menu.addItem('Recalculate Currents', null, ui.actions.get('recalculateCurrents').funct, parent); };
+  }
+  setTimeout(recalc, 1000);
+  console.log('[PowerBlockCalculator] Plugin loaded.');
+  alert('Power Block Calculator plugin loaded!');
+});
+};
+
+// Extract the function body and create a properly encoded bookmarklet
+var code = pluginCode.toString();
+// Get just the function body (between first { and last })
+code = code.substring(code.indexOf('{') + 1, code.lastIndexOf('}'));
+// Trim whitespace
+code = code.trim();
+
+var container = document.getElementById('bookmarklet-container');
+var link = document.createElement('a');
+link.className = 'bookmarklet-link';
+link.textContent = '\u26A1 Power Block Calculator';
+link.href = 'javascript:' + encodeURIComponent(code);
+link.title = 'Drag this to your bookmarks bar';
+
+// Prevent clicking from navigating (it should be dragged)
+link.addEventListener('click', function(e) {
+  e.preventDefault();
+  alert('Don\'t click - drag this button to your bookmarks bar!');
+});
+
+container.appendChild(link);
+</script>
+</body>
+</html>
