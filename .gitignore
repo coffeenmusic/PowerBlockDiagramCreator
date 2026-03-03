@@ -4,4 +4,5 @@ Archive/
 *.xlsx
 *.csv
 *.xml
+*.log
 !DrawIO/Library/*.xml
