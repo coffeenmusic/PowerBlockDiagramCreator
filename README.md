@@ -1,92 +1,109 @@
 # Power Block Diagram Current Calculator
 
-1. Create a power block diagram using the custom `DrawIO\Library\...Library.xml` library & define all downstream loads.
-![Raw Power Block Diagram](images/raw_power_diagram.jpg)
+Automatically back-calculate upstream currents in power block diagrams built with [draw.io](https://app.diagrams.net). Currents update in real-time as you build the diagram — no export/import cycle needed.
 
-2. Calculate all upstream current rails using `python calculate_currents.py`. It exports new draw.io that replaces ? with rail current.
 ![Processed Power Block Diagram](images/processed_power_diagram.jpg)
 
-## Import Custom Library from Draw.IO
+## Quick Start
 
-Importing the custom drawio library:
-- `File, Open Library From, Device...`
-- Browse to `DrawIO\Library\...Library.xml` file
-- Library will appear in the left tool bar in drawio
+1. Open [app.diagrams.net](https://app.diagrams.net)
+2. Import the custom library: `File > Open Library From > Device...` and select `DrawIO/Library/DrawIO_PowerBlockDiagram_Library.xml`
+3. Load the plugin using one of the methods below
+4. Build your power tree — upstream currents calculate automatically
+
+## Loading the Plugin
+
+### Option 1: Bookmarklet (Web)
+
+1. Open `DrawIO/Plugin/install_bookmarklet.html` in your browser
+2. Drag the blue button to your bookmarks bar
+3. Open draw.io, then click the bookmark to load the plugin
+4. You'll see a confirmation alert. Re-click each time you reload draw.io.
+
+### Option 2: Desktop App
+
+1. Launch draw.io with: `"C:\Program Files\draw.io\draw.io.exe" --enable-plugins`
+2. Go to **Extras > Plugins...**
+3. Click **Add** and select `DrawIO/Plugin/power_block_calculator.js`
+4. Click **Apply** and restart (with `--enable-plugins`)
+
+### Option 3: Python Script (Legacy)
+
+The original `calculate_currents.py` script is still available. Export your diagram as XML, run `python calculate_currents.py`, and import the generated `_with_currents.xml` back into draw.io.
+
+## Building a Diagram
+
+1. Drag components from the library: SW Regulators, LDOs, AC/DC, Sources, Loads, Filters, Current Sums, Power Switches
+2. Double-click to edit values (voltage, current, efficiency)
+3. Connect components with lines — make sure they snap to the green connection points
+4. The plugin automatically calculates all upstream currents
 
 ![Open Custom Library](images/open-library.gif)
+![Build Block Diagram](images/build-diagram.gif)
 
-## Create Power Block Diagram
-- Drag in SW Regulators, LDOs, current sums, loads, etc.
-- For switching regulators & LDOs, ?V is req
-- Connect them all with lines. This step is critical, if there are unconnected rails the script will throw an error trying to point you to the problem. Make sure the lines connect to the green dots that appear when you hover over the object edges.
-- Loads can multiply if a multiplier is added to the end of a load name. For example `LEDs x8`. So if you made the load current 5mA it would be 40mA when running the calculation.
+### Component Properties
+
+| Component | User Enters | Plugin Calculates |
+|-----------|------------|-------------------|
+| **Source** | Output voltage | Total load current |
+| **SW Reg** | Output voltage, efficiency | Input current (accounting for conversion) |
+| **LDO** | Output voltage | Input current (passthrough) |
+| **AC/DC** | Efficiency | Output voltage, input current |
+| **Load** | Name, current | — |
+| **Filter / Power Switch** | — | Current (passthrough) |
+| **Current Sum (isum)** | — | Sum of downstream currents |
+
+### Load Multipliers
+
+Append `x<N>` to a load name to multiply its current. For example, `LEDs x8` with 5mA becomes 40mA.
 
 ![SW Regulator](images/sw_reg.jpg)
 ![LDO](images/ldo.jpg)
 
-![Build Block Diagram](images/build-diagram.gif)
+## Mutually Exclusive Loads (XOR)
 
-## Requirements
+Add XOR tags to load names to indicate loads that never run simultaneously. The plugin uses the higher current instead of summing both.
 
-- Python 3.x
-- The following Python libraries:
-  - `xml.etree.ElementTree`
-  - `tkinter` For the file dialog.
-  - `pandas`
-  - `numpy`
-  - `os`
-  - `re`
+### Paired XOR: `XOR1A` / `XOR1B`
 
-Install required packages with:
+Two specific loads that alternate. Only the larger of the pair counts at their common ancestor.
 
-```bash
-pip install pandas numpy
+```
+X-COIL XOR1A    (0.37A)  ─── on +12V branch
+X-COIL XOR1B    (0.37A)  ─── on -12V branch
+→ At the 28V source: only one 0.37A contribution (reflected), not both
+```
+
+Multiple groups work independently: `XOR1A`/`XOR1B` is one pair, `XOR2A`/`XOR2B` is another.
+
+### Rail-Exclusive XOR: `XOR3` (number, no letter)
+
+This load is mutually exclusive with **all other loads on the same rail**. The parent node uses `max(this load, sum of all other loads)`.
+
+```
+SBPU Heater XOR3    (2A)   ─── on 12V isum
+OpAmp x4            (40mA) ─── on 12V isum
+ADC                 (20mA) ─── on 12V isum
+→ isum current = max(2A, 0.04 + 0.02) = 2A
+```
+
+### Global-Exclusive XOR: `XOR` (bare, no number)
+
+This load is mutually exclusive with **all other loads in the entire diagram**. Propagates through voltage converters and resolves at every level as `max(this load, everything else)`.
+
+```
+Launch Lock XOR     (3A)   ─── only fires when nothing else is active
+→ Source current = max(3A reflected, sum of all other loads reflected)
 ```
 
 ## How It Works
 
-1. **File Selection**:
-   - If only one `.xml` file is present in the directory, it is automatically selected.
-   - Otherwise, a file dialog is used to select the XML export file from the draw.io diagram.
+The plugin hooks into draw.io's mxGraph API and recalculates on every diagram change:
 
-2. **Parsing the XML**:
-   - The script parses the XML to extract important attributes (ID, type, labels, parent-child relationships, etc.) into a `pandas` DataFrame.
-
-3. **Flattening and Cleaning Data**:
-   - The script removes HTML tags from attributes and converts relevant columns (such as currents, voltages, and efficiencies) into numerical values.
-
-4. **Recursive Calculations**:
-   - For each node (component) in the power system, the script recursively calculates missing load currents by analyzing downstream currents and efficiency values.
-   - For nodes like AC/DC converters, the output voltage is calculated from the input AC voltage, considering a full bridge rectifier.
-
-5. **XML Update**:
-   - Once the currents and voltages are calculated, the script updates the original XML with these values.
-   - The updated XML is saved to a new file.
-
-## Running the Script
-
-1. Place your draw.io XML export file in the same directory as the script.
-2. Run the script:
-
-```bash
-python calculate_currents.py
-```
-
-3. If more than one XML file is present, you will be prompted to select one via a file dialog.
-4. The script will process the file, perform current back-calculations, and generate a new XML file with updated current and voltage values.
-
-## Output
-
-The script generates a new XML file with the suffix `_with_currents.xml` that includes updated labels with the calculated values. This file can be imported back into draw.io for visualization.
+1. **Top-down voltage propagation** — passthrough components inherit their parent's voltage; AC/DC computes output from input AC
+2. **Bottom-up current summation** — leaf load currents sum upward; switching regulators and AC/DC converters account for voltage conversion and efficiency: `I_in = (I_out × V_out) / (η × V_in)`
+3. **XOR resolution** — paired XOR groups take max instead of sum at merge points; rail-exclusive compares against siblings; global-exclusive compares against the entire tree
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-### MIT License
-
-Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
