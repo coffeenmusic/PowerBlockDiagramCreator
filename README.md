@@ -39,7 +39,6 @@ The original `calculate_currents.py` script is still available. Export your diag
 4. The plugin automatically calculates all upstream currents
 
 ![Open Custom Library](images/open-library.gif)
-![Build Block Diagram](images/build-diagram.gif)
 
 ### Component Properties
 
