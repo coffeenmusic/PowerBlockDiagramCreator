@@ -13,6 +13,16 @@
  *        See README for detailed instructions.
  */
 Draw.loadPlugin(function(ui) {
+	// Guard against loading twice on the same page. Duplicate instances attach
+	// duplicate change-listeners that fight over edge colors → red/black
+	// flashing. Every version registers the 'recalculateCurrents' action, so
+	// this also detects an older version that's still loaded.
+	if (ui.actions.get('recalculateCurrents')) {
+		alert('Power Block Calculator is already loaded on this page.\n' +
+			'To load a newer version, reload the draw.io page first, then load the plugin once.');
+		return;
+	}
+
 	var graph = ui.editor.graph;
 	var model = graph.getModel();
 
@@ -164,6 +174,59 @@ Draw.loadPlugin(function(ui) {
 	}
 
 	// -------------------------------------------------------------------------
+	// Edge connection validity  (color bad rails red, restore when fixed)
+	// -------------------------------------------------------------------------
+
+	var EDGE_ERROR_COLOR = '#FF0000';
+	var EDGE_ORIG_STROKE = 'pbdOrigStroke'; // sentinel: marks an edge we recolored
+
+	/** Read a single key out of a raw "k1=v1;k2=v2;" style string. */
+	function getStyleKey(style, key) {
+		if (!style) return null;
+		var parts = style.split(';');
+		for (var i = 0; i < parts.length; i++) {
+			if (!parts[i]) continue;
+			var eq = parts[i].indexOf('=');
+			var k = eq >= 0 ? parts[i].substring(0, eq) : parts[i];
+			if (k === key) return eq >= 0 ? parts[i].substring(eq + 1) : '';
+		}
+		return null;
+	}
+
+	/**
+	 * Turn an edge red when its connection is bad, or restore its original
+	 * color when it's fixed. We only ever restore edges we ourselves marked
+	 * (tracked via the EDGE_ORIG_STROKE sentinel), so manually-colored edges
+	 * are left untouched. Returns true if the style actually changed.
+	 */
+	function markEdgeError(edge, isError) {
+		var style = edge.getStyle() || '';
+		var savedOrig = getStyleKey(style, EDGE_ORIG_STROKE);
+		var flagged = savedOrig !== null;
+
+		if (isError) {
+			if (flagged) return false; // already red — nothing to do
+			var orig = getStyleKey(style, 'strokeColor');
+			var newStyle = mxUtils.setStyle(style, EDGE_ORIG_STROKE,
+				orig === null ? 'default' : orig);
+			newStyle = mxUtils.setStyle(newStyle, 'strokeColor', EDGE_ERROR_COLOR);
+			model.setStyle(edge, newStyle);
+			return true;
+		}
+
+		if (!flagged) return false; // we never touched this edge — leave it
+		var restored = style;
+		if (savedOrig === 'default' || savedOrig === '') {
+			restored = mxUtils.setStyle(restored, 'strokeColor', null); // back to default
+		} else {
+			restored = mxUtils.setStyle(restored, 'strokeColor', savedOrig);
+		}
+		restored = mxUtils.setStyle(restored, EDGE_ORIG_STROKE, null); // drop sentinel
+		model.setStyle(edge, restored);
+		return true;
+	}
+
+	// -------------------------------------------------------------------------
 	// Load multiplier  (e.g. "USB Connector x4" → multiplier of 4)
 	// -------------------------------------------------------------------------
 
@@ -209,19 +272,43 @@ Draw.loadPlugin(function(ui) {
 			if (Object.keys(components).length === 0) return;
 
 			// --- Build supply map (consumer → supplier) from edges -----------
+			// While we're here, classify each edge's connection so broken
+			// rails can be colored red (and restored to black once fixed).
 			var supplyMap = {};
+			var errorEdges = {}; // edgeId -> true for rails that don't connect properly
 			var cells = model.cells;
 
 			for (var id in cells) {
 				if (!cells.hasOwnProperty(id)) continue;
 				var cell = cells[id];
-				if (model.isEdge(cell) && cell.source && cell.target) {
-					var srcGroup = getGroupParent(cell.source, components);
-					var tgtGroup = getGroupParent(cell.target, components);
-					if (srcGroup && tgtGroup && srcGroup.id !== tgtGroup.id) {
-						supplyMap[tgtGroup.id] = srcGroup.id;
-					}
+				if (!model.isEdge(cell)) continue;
+
+				// A line is a power rail only if an endpoint lands on a component.
+				// What the edge is parented under is irrelevant: draw.io re-parents a
+				// dangling rail under the component you drew it from.
+
+				var srcGroup = cell.source ? getGroupParent(cell.source, components) : null;
+				var tgtGroup = cell.target ? getGroupParent(cell.target, components) : null;
+				var connectedEnds = (srcGroup ? 1 : 0) + (tgtGroup ? 1 : 0);
+
+				if (srcGroup && tgtGroup && srcGroup.id !== tgtGroup.id) {
+					// Valid supplier → consumer rail.
+					supplyMap[tgtGroup.id] = srcGroup.id;
+				} else if (connectedEnds === 1) {
+					// The edge touches a power component on one end but doesn't
+					// form a valid supplier → consumer link: the other end is
+					// dangling (not snapped to anything). It's a
+					// broken power rail → flag it red.
+					errorEdges[id] = true;
 				}
+				// connectedEnds === 0 → the edge connects to no component at all,
+				// so it's a plain drawing/annotation line, not a power rail.
+				// Leave it alone.
+			}
+
+			if (Object.keys(errorEdges).length > 0) {
+				console.log('[PowerBlockCalculator] ' +
+					Object.keys(errorEdges).length + ' rail(s) with a bad connection');
 			}
 
 			// --- Build node graph --------------------------------------------
@@ -311,7 +398,20 @@ Draw.loadPlugin(function(ui) {
 			// Rail-exclusive XOR (XOR3, no letter): resolved locally at the parent;
 			// total = max(rail-exclusive load, sum of all other loads on the rail).
 			function calculateCurrent(node) {
-				if (node.children.length === 0) return;
+				if (node.children.length === 0) {
+					// Leaf node. A 'load' carries its own current (read from the
+					// diagram). A non-load component (LDO, pwr_sw, filter, sw_reg,
+					// source, …) with no downstream connections carries no load,
+					// so its current is 0 — not stale/unknown. Without this,
+					// cutting the last load below such a component leaves its old
+					// value frozen on the diagram and propagated upstream.
+					if (node.type !== 'load' && isNaN(node.current)) {
+						node.current = 0;
+						node.normalCurrent = 0;
+						node.xorCurrents = {};
+					}
+					return;
+				}
 
 				var normalSum = 0;
 				var xorMerged = {};
@@ -422,6 +522,17 @@ Draw.loadPlugin(function(ui) {
 						}
 					}
 				}
+
+				// Color broken rails red; restore any we previously marked
+				// once their connection is valid again.
+				for (var eid in cells) {
+					if (!cells.hasOwnProperty(eid)) continue;
+					var ec = cells[eid];
+					if (!model.isEdge(ec)) continue;
+					if (markEdgeError(ec, errorEdges[eid] === true)) {
+						changed = true;
+					}
+				}
 			} finally {
 				model.endUpdate();
 			}
@@ -472,5 +583,5 @@ Draw.loadPlugin(function(ui) {
 	// Run once on load
 	setTimeout(recalculate, 1000);
 
-	console.log('[PowerBlockCalculator] Plugin loaded.');
+	console.log('[PowerBlockCalculator] Plugin loaded (v5: detects rails parented inside a component; drawing lines ignored).');
 });

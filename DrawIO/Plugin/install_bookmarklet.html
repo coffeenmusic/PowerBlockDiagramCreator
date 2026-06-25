@@ -67,6 +67,7 @@
 // The plugin source code - this gets properly encoded into the bookmarklet href
 var pluginCode = function() {
 Draw.loadPlugin(function(ui) {
+  if (ui.actions.get('recalculateCurrents')) { alert('Power Block Calculator is already loaded on this page.\nReload the draw.io page first to load a newer version, then click the bookmarklet once.'); return; }
   var graph = ui.editor.graph;
   var model = graph.getModel();
   var ROOT_TYPES = ['sw_reg', 'ldo', 'acdc', 'source', 'load', 'filter', 'isum', 'pwr_sw'];
@@ -177,21 +178,57 @@ Draw.loadPlugin(function(ui) {
     return !m[2];
   }
 
+  var EDGE_ERR = '#FF0000', EDGE_ORIG = 'pbdOrigStroke';
+  function styleKey(st, k) {
+    if (!st) return null;
+    var ps = st.split(';');
+    for (var i = 0; i < ps.length; i++) {
+      if (!ps[i]) continue;
+      var eq = ps[i].indexOf('=');
+      var kk = eq >= 0 ? ps[i].substring(0, eq) : ps[i];
+      if (kk === k) return eq >= 0 ? ps[i].substring(eq + 1) : '';
+    }
+    return null;
+  }
+  function markEdge(edge, isErr) {
+    var st = edge.getStyle() || '';
+    var saved = styleKey(st, EDGE_ORIG), flagged = saved !== null;
+    if (isErr) {
+      if (flagged) return false;
+      var orig = styleKey(st, 'strokeColor');
+      var ns = mxUtils.setStyle(st, EDGE_ORIG, orig === null ? 'default' : orig);
+      ns = mxUtils.setStyle(ns, 'strokeColor', EDGE_ERR);
+      model.setStyle(edge, ns);
+      return true;
+    }
+    if (!flagged) return false;
+    var rs = st;
+    if (saved === 'default' || saved === '') rs = mxUtils.setStyle(rs, 'strokeColor', null);
+    else rs = mxUtils.setStyle(rs, 'strokeColor', saved);
+    rs = mxUtils.setStyle(rs, EDGE_ORIG, null);
+    model.setStyle(edge, rs);
+    return true;
+  }
+
   function recalc() {
     if (isRecalculating) return;
     isRecalculating = true;
     try {
       var comps = getComps();
       if (Object.keys(comps).length === 0) return;
-      var sMap = {}, cs = model.cells;
+      var sMap = {}, errEdges = {}, cs = model.cells;
       for (var id in cs) {
         if (!cs.hasOwnProperty(id)) continue;
         var c = cs[id];
-        if (model.isEdge(c) && c.source && c.target) {
-          var sg = getGP(c.source, comps), tg = getGP(c.target, comps);
-          if (sg && tg && sg.id !== tg.id) sMap[tg.id] = sg.id;
-        }
+        if (!model.isEdge(c)) continue;
+        // parent group is irrelevant; endpoints below decide rail vs drawing
+        var sg = c.source ? getGP(c.source, comps) : null;
+        var tg = c.target ? getGP(c.target, comps) : null;
+        if (sg && tg) { if (sg.id !== tg.id) sMap[tg.id] = sg.id; }
+        else if (sg || tg) errEdges[id] = true; // touches a component but isn't a valid rail
+        // else: connects to no component → plain drawing line, leave alone
       }
+      if (Object.keys(errEdges).length > 0) console.log('[PowerBlockCalculator] ' + Object.keys(errEdges).length + ' rail(s) with a bad connection');
       var nodes = {};
       for (var cid in comps) {
         if (!comps.hasOwnProperty(cid)) continue;
@@ -231,7 +268,12 @@ Draw.loadPlugin(function(ui) {
         }
       }
       function calcI(nd) {
-        if (nd.children.length === 0) return;
+        if (nd.children.length === 0) {
+          // Non-load component with no downstream connections draws no load → 0,
+          // not a stale/frozen value. (Loads keep their own read current.)
+          if (nd.type !== 'load' && isNaN(nd.current)) { nd.current = 0; nd.normalCurrent = 0; nd.xorCurrents = {}; }
+          return;
+        }
         var normalSum = 0, xorMerged = {}, railXorSum = 0, hasRailXor = false;
         for (var i = 0; i < nd.children.length; i++) {
           var ch = nd.children[i];
@@ -285,6 +327,12 @@ Draw.loadPlugin(function(ui) {
           if (n.type !== 'load' && !isNaN(n.current)) { if (writeP(cc, 'load_current', fmtI(n.current))) changed = true; }
           if (n.type === 'acdc' && !isNaN(n.vout)) { if (writeP(cc, 'vout', fmtV(n.vout))) changed = true; }
         }
+        for (var eid in cs) {
+          if (!cs.hasOwnProperty(eid)) continue;
+          var ec = cs[eid];
+          if (!model.isEdge(ec)) continue;
+          if (markEdge(ec, errEdges[eid] === true)) changed = true;
+        }
       } finally { model.endUpdate(); }
       if (changed) graph.refresh();
     } finally { isRecalculating = false; }
@@ -299,8 +347,8 @@ Draw.loadPlugin(function(ui) {
     em.funct = function(menu, parent) { of.apply(this, arguments); menu.addSeparator(parent); menu.addItem('Recalculate Currents', null, ui.actions.get('recalculateCurrents').funct, parent); };
   }
   setTimeout(recalc, 1000);
-  console.log('[PowerBlockCalculator] Plugin loaded.');
-  alert('Power Block Calculator plugin loaded!');
+  console.log('[PowerBlockCalculator] Plugin loaded (v5: detects rails parented inside a component; drawing lines ignored).');
+  alert('Power Block Calculator plugin loaded!\n(v5: broken rails highlighted red; drawing lines ignored)');
 });
 };
 

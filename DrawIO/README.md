@@ -14,3 +14,4 @@ Notes:
 - The source current should be left as a ? and will be calculated automatically
 - The max current rating of a switching regulator, LDO, etc can be left as ?A w/out disturbing the current calculations. The sw freq can be left as ?KHz.
 - Load currents must be defined, but 0A is allowed.
+- Rails (lines) that aren't properly connected turn **red** automatically. A rail is flagged when it touches a component on one end but its other end is dangling (not snapped to a block) or loops back to the same component, so current can't back-propagate through it. Fix the connection and the line returns to its original color on the next recalculation. (Decorative/symbol lines and lines that don't touch any component are left alone.)
