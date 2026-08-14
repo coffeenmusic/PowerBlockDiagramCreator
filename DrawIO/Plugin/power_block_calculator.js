@@ -30,6 +30,16 @@ Draw.loadPlugin(function(ui) {
 	var isRecalculating = false;
 	var recalcTimer = null;
 
+	/**
+	 * Safe own-property test. Never call obj.hasOwnProperty() directly here:
+	 * model.cells is a prototype-less object in newer draw.io builds (and a cell
+	 * whose id is literally "hasOwnProperty" would shadow the method), so the
+	 * direct call throws "hasOwnProperty is not a function".
+	 */
+	function hasOwn(obj, key) {
+		return Object.prototype.hasOwnProperty.call(obj, key);
+	}
+
 	// -------------------------------------------------------------------------
 	// Value parsing (mirrors Python extract_and_convert)
 	// -------------------------------------------------------------------------
@@ -101,7 +111,7 @@ Draw.loadPlugin(function(ui) {
 		var components = {};
 		var cells = model.cells;
 		for (var id in cells) {
-			if (cells.hasOwnProperty(id)) {
+			if (hasOwn(cells, id)) {
 				var type = getCellType(cells[id]);
 				if (type !== null && ROOT_TYPES.indexOf(type) >= 0) {
 					components[id] = cells[id];
@@ -114,11 +124,11 @@ Draw.loadPlugin(function(ui) {
 	/** Walk up the parent chain from `cell` to find its component group. */
 	function getGroupParent(cell, components) {
 		if (!cell) return null;
-		if (components[cell.id]) return cell;
+		if (hasOwn(components, cell.id)) return cell;
 
 		var parent = model.getParent(cell);
 		if (!parent || parent.id === '0' || parent.id === '1') return null;
-		if (components[parent.id]) return parent;
+		if (hasOwn(components, parent.id)) return parent;
 		return getGroupParent(parent, components);
 	}
 
@@ -279,7 +289,7 @@ Draw.loadPlugin(function(ui) {
 			var cells = model.cells;
 
 			for (var id in cells) {
-				if (!cells.hasOwnProperty(id)) continue;
+				if (!hasOwn(cells, id)) continue;
 				var cell = cells[id];
 				if (!model.isEdge(cell)) continue;
 
@@ -314,7 +324,7 @@ Draw.loadPlugin(function(ui) {
 			// --- Build node graph --------------------------------------------
 			var nodes = {};
 			for (var cid in components) {
-				if (!components.hasOwnProperty(cid)) continue;
+				if (!hasOwn(components, cid)) continue;
 				var comp = components[cid];
 				var type = getCellType(comp);
 
@@ -353,7 +363,7 @@ Draw.loadPlugin(function(ui) {
 
 			// Link children
 			for (var nid in nodes) {
-				if (!nodes.hasOwnProperty(nid)) continue;
+				if (!hasOwn(nodes, nid)) continue;
 				var sid = nodes[nid].supplierId;
 				if (sid && nodes[sid]) {
 					nodes[sid].children.push(nodes[nid]);
@@ -363,7 +373,7 @@ Draw.loadPlugin(function(ui) {
 
 			// Initialize XOR tracking for leaf loads
 			for (var lid in nodes) {
-				if (!nodes.hasOwnProperty(lid)) continue;
+				if (!hasOwn(nodes, lid)) continue;
 				var leaf = nodes[lid];
 				if (leaf.children.length === 0 && !isNaN(leaf.current)) {
 					if (leaf.railXor) {
@@ -445,9 +455,9 @@ Draw.loadPlugin(function(ui) {
 						normalSum += Math.abs(child.normalCurrent * ratio);
 
 						for (var g in child.xorCurrents) {
-							if (child.xorCurrents.hasOwnProperty(g)) {
+							if (hasOwn(child.xorCurrents, g)) {
 								var reflected = Math.abs(child.xorCurrents[g] * ratio);
-								if (!xorMerged.hasOwnProperty(g) || reflected > xorMerged[g]) {
+								if (!hasOwn(xorMerged, g) || reflected > xorMerged[g]) {
 									xorMerged[g] = reflected;
 								}
 							}
@@ -459,7 +469,7 @@ Draw.loadPlugin(function(ui) {
 					// Rail-exclusive: max(rail-exclusive total, everything else)
 					var otherTotal = normalSum;
 					for (var g in xorMerged) {
-						if (xorMerged.hasOwnProperty(g)) otherTotal += xorMerged[g];
+						if (hasOwn(xorMerged, g)) otherTotal += xorMerged[g];
 					}
 					var total = Math.max(railXorSum, otherTotal);
 					// After resolution, propagate as normal current
@@ -472,9 +482,9 @@ Draw.loadPlugin(function(ui) {
 					node.xorCurrents = xorMerged;
 					var totalLoad = normalSum;
 					var globalXor = 0;
-					var hasGlobal = xorMerged.hasOwnProperty('_global');
+					var hasGlobal = hasOwn(xorMerged, '_global');
 					for (var g in xorMerged) {
-						if (xorMerged.hasOwnProperty(g)) {
+						if (hasOwn(xorMerged, g)) {
 							if (g === '_global') {
 								globalXor = xorMerged[g];
 							} else {
@@ -492,7 +502,7 @@ Draw.loadPlugin(function(ui) {
 
 			// Run from root nodes (those with no supplier)
 			for (var rid in nodes) {
-				if (!nodes.hasOwnProperty(rid)) continue;
+				if (!hasOwn(nodes, rid)) continue;
 				if (!nodes[rid].supplierId) {
 					propagateVout(nodes[rid]);
 					calculateCurrent(nodes[rid]);
@@ -504,7 +514,7 @@ Draw.loadPlugin(function(ui) {
 			model.beginUpdate();
 			try {
 				for (var wid in nodes) {
-					if (!nodes.hasOwnProperty(wid)) continue;
+					if (!hasOwn(nodes, wid)) continue;
 					var n = nodes[wid];
 					var c = components[wid];
 
@@ -526,7 +536,7 @@ Draw.loadPlugin(function(ui) {
 				// Color broken rails red; restore any we previously marked
 				// once their connection is valid again.
 				for (var eid in cells) {
-					if (!cells.hasOwnProperty(eid)) continue;
+					if (!hasOwn(cells, eid)) continue;
 					var ec = cells[eid];
 					if (!model.isEdge(ec)) continue;
 					if (markEdgeError(ec, errorEdges[eid] === true)) {
@@ -583,5 +593,5 @@ Draw.loadPlugin(function(ui) {
 	// Run once on load
 	setTimeout(recalculate, 1000);
 
-	console.log('[PowerBlockCalculator] Plugin loaded (v5: detects rails parented inside a component; drawing lines ignored).');
+	console.log('[PowerBlockCalculator] Plugin loaded (v6: fixes hasOwnProperty crash on newer draw.io).');
 });

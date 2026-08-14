@@ -73,6 +73,9 @@ Draw.loadPlugin(function(ui) {
   var ROOT_TYPES = ['sw_reg', 'ldo', 'acdc', 'source', 'load', 'filter', 'isum', 'pwr_sw'];
   var isRecalculating = false;
   var recalcTimer = null;
+  // model.cells can be prototype-less in newer draw.io builds, so never call
+  // obj.hasOwnProperty() directly (throws "not a function").
+  function hasOwn(o, k) { return Object.prototype.hasOwnProperty.call(o, k); }
 
   function removeHtml(s) { return s.replace(/<[^>]*>/g, '').trim(); }
 
@@ -110,7 +113,7 @@ Draw.loadPlugin(function(ui) {
   function getComps() {
     var r = {}, cs = model.cells;
     for (var id in cs) {
-      if (cs.hasOwnProperty(id)) {
+      if (hasOwn(cs, id)) {
         var t = getType(cs[id]);
         if (t !== null && ROOT_TYPES.indexOf(t) >= 0) r[id] = cs[id];
       }
@@ -120,10 +123,10 @@ Draw.loadPlugin(function(ui) {
 
   function getGP(c, comps) {
     if (!c) return null;
-    if (comps[c.id]) return c;
+    if (hasOwn(comps, c.id)) return c;
     var p = model.getParent(c);
     if (!p || p.id === '0' || p.id === '1') return null;
-    if (comps[p.id]) return p;
+    if (hasOwn(comps, p.id)) return p;
     return getGP(p, comps);
   }
 
@@ -218,7 +221,7 @@ Draw.loadPlugin(function(ui) {
       if (Object.keys(comps).length === 0) return;
       var sMap = {}, errEdges = {}, cs = model.cells;
       for (var id in cs) {
-        if (!cs.hasOwnProperty(id)) continue;
+        if (!hasOwn(cs, id)) continue;
         var c = cs[id];
         if (!model.isEdge(c)) continue;
         // parent group is irrelevant; endpoints below decide rail vs drawing
@@ -231,7 +234,7 @@ Draw.loadPlugin(function(ui) {
       if (Object.keys(errEdges).length > 0) console.log('[PowerBlockCalculator] ' + Object.keys(errEdges).length + ' rail(s) with a bad connection');
       var nodes = {};
       for (var cid in comps) {
-        if (!comps.hasOwnProperty(cid)) continue;
+        if (!hasOwn(comps, cid)) continue;
         var comp = comps[cid], type = getType(comp);
         var vo = parseValue(readP(comp, 'vout'));
         var eff = parseValue(readP(comp, 'efficiency'));
@@ -244,12 +247,12 @@ Draw.loadPlugin(function(ui) {
         nodes[cid] = { id: cid, type: type, vout: vo, current: lc, efficiency: isNaN(eff) ? 1.0 : eff, xorGroup: getXorGroup(ln), railXor: isRailXor(ln), normalCurrent: 0, xorCurrents: {}, children: [], sid: sMap[cid] || null };
       }
       for (var nid in nodes) {
-        if (!nodes.hasOwnProperty(nid)) continue;
+        if (!hasOwn(nodes, nid)) continue;
         var s = nodes[nid].sid;
         if (s && nodes[s]) nodes[s].children.push(nodes[nid]);
       }
       for (var lid in nodes) {
-        if (!nodes.hasOwnProperty(lid)) continue;
+        if (!hasOwn(nodes, lid)) continue;
         var leaf = nodes[lid];
         if (leaf.children.length === 0 && !isNaN(leaf.current)) {
           if (leaf.railXor) { leaf.normalCurrent = 0; }
@@ -290,23 +293,23 @@ Draw.loadPlugin(function(ui) {
           } else {
             normalSum += Math.abs(ch.normalCurrent * ratio);
             for (var g in ch.xorCurrents) {
-              if (ch.xorCurrents.hasOwnProperty(g)) {
+              if (hasOwn(ch.xorCurrents, g)) {
                 var ref = Math.abs(ch.xorCurrents[g] * ratio);
-                if (!xorMerged.hasOwnProperty(g) || ref > xorMerged[g]) xorMerged[g] = ref;
+                if (!hasOwn(xorMerged, g) || ref > xorMerged[g]) xorMerged[g] = ref;
               }
             }
           }
         }
         if (hasRailXor) {
           var otherTot = normalSum;
-          for (var g in xorMerged) { if (xorMerged.hasOwnProperty(g)) otherTot += xorMerged[g]; }
+          for (var g in xorMerged) { if (hasOwn(xorMerged, g)) otherTot += xorMerged[g]; }
           var total = Math.max(railXorSum, otherTot);
           nd.normalCurrent = total; nd.xorCurrents = {}; nd.current = total;
         } else {
           nd.normalCurrent = normalSum; nd.xorCurrents = xorMerged;
-          var tot = normalSum, gxor = 0, hasG = xorMerged.hasOwnProperty('_global');
+          var tot = normalSum, gxor = 0, hasG = hasOwn(xorMerged, '_global');
           for (var g in xorMerged) {
-            if (xorMerged.hasOwnProperty(g)) {
+            if (hasOwn(xorMerged, g)) {
               if (g === '_global') { gxor = xorMerged[g]; } else { tot += xorMerged[g]; }
             }
           }
@@ -315,20 +318,20 @@ Draw.loadPlugin(function(ui) {
         }
       }
       for (var rid in nodes) {
-        if (!nodes.hasOwnProperty(rid)) continue;
+        if (!hasOwn(nodes, rid)) continue;
         if (!nodes[rid].sid) { propV(nodes[rid]); calcI(nodes[rid]); }
       }
       var changed = false;
       model.beginUpdate();
       try {
         for (var wid in nodes) {
-          if (!nodes.hasOwnProperty(wid)) continue;
+          if (!hasOwn(nodes, wid)) continue;
           var n = nodes[wid], cc = comps[wid];
           if (n.type !== 'load' && !isNaN(n.current)) { if (writeP(cc, 'load_current', fmtI(n.current))) changed = true; }
           if (n.type === 'acdc' && !isNaN(n.vout)) { if (writeP(cc, 'vout', fmtV(n.vout))) changed = true; }
         }
         for (var eid in cs) {
-          if (!cs.hasOwnProperty(eid)) continue;
+          if (!hasOwn(cs, eid)) continue;
           var ec = cs[eid];
           if (!model.isEdge(ec)) continue;
           if (markEdge(ec, errEdges[eid] === true)) changed = true;
@@ -347,8 +350,8 @@ Draw.loadPlugin(function(ui) {
     em.funct = function(menu, parent) { of.apply(this, arguments); menu.addSeparator(parent); menu.addItem('Recalculate Currents', null, ui.actions.get('recalculateCurrents').funct, parent); };
   }
   setTimeout(recalc, 1000);
-  console.log('[PowerBlockCalculator] Plugin loaded (v5: detects rails parented inside a component; drawing lines ignored).');
-  alert('Power Block Calculator plugin loaded!\n(v5: broken rails highlighted red; drawing lines ignored)');
+  console.log('[PowerBlockCalculator] Plugin loaded (v6: fixes hasOwnProperty crash on newer draw.io).');
+  alert('Power Block Calculator plugin loaded!\n(v6: broken rails highlighted red; drawing lines ignored)');
 });
 };
 
